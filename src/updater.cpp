@@ -94,18 +94,33 @@ void Updater::run()
 void Updater::onReadyReadStdout()
 {
     const QByteArray data = m_process->readAllStandardOutput();
-    const QString text = QString::fromUtf8(data);
-    if (text.contains("==> phase:")) {
-        for (const QString &line : text.split('\n')) {
-            int idx = line.indexOf("==> phase:");
-            if (idx >= 0) {
-                emit phaseChanged(line.mid(idx + 10).trimmed());
-            } else if (!line.trimmed().isEmpty()) {
-                emit output(line + "\n");
-            }
+    QString text = QString::fromUtf8(data);
+    // 'script' (pty wrapper) puede colar '\r' al final de cada línea; los limpiamos
+    // para que no aparezcan caracteres extraños en QPlainTextEdit.
+    text.replace("\r\n", "\n");
+    text.remove('\r');
+
+    for (const QString &line : text.split('\n')) {
+        const QString stripped = line.trimmed();
+        if (stripped.isEmpty()) {
+            continue;
         }
-    } else {
-        emit output(text);
+        int idx = line.indexOf("==> phase:");
+        if (idx >= 0) {
+            const QString phaseMsg = line.mid(idx + 10).trimmed();
+            emit phaseChanged(phaseMsg);
+            emit output(QStringLiteral("── %1 ──\n").arg(phaseMsg));
+            continue;
+        }
+        // Heurística: pacman con --noprogressbar emite líneas como
+        // "downloading qt6-base-6.x.y-1-x86_64.pkg.tar.zst..."
+        // o "installing qt6-base..." — útiles como subtítulo de estado.
+        if (stripped.startsWith("downloading ") || stripped.startsWith("installing ")
+            || stripped.startsWith("upgrading ") || stripped.startsWith("reinstalling ")
+            || stripped.startsWith("removing ")) {
+            emit phaseChanged(stripped);
+        }
+        emit output(line + '\n');
     }
 }
 
