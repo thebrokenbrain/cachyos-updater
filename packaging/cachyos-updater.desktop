@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=CachyOS Updater
+Name[es]=Actualizador de CachyOS
+GenericName=System Updater
+GenericName[es]=Actualizador del sistema
+Comment=Update your CachyOS system in one click
+Comment[es]=Actualiza tu sistema CachyOS con un solo clic
+Exec=cachyos-updater
+Icon=cachyos-updater
+Terminal=false
+Categories=System;Settings;PackageManager;
+Keywords=update;upgrade;pacman;cachyos;system;
+StartupNotify=true
+StartupWMClass=cachyos-updater

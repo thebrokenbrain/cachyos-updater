@@ -1,0 +1,187 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Compilar y empaquetar en Arch / CachyOS
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+      options: --user root
+
+    steps:
+      - name: Preparar pacman y dependencias de build
+        shell: bash
+        run: |
+          set -euxo pipefail
+          pacman-key --init
+          pacman-key --populate archlinux
+          pacman -Syu --noconfirm --needed \
+            base-devel git sudo cmake ninja \
+            qt6-base qt6-svg qt6-tools \
+            polkit reflector shellcheck
+
+      - name: Verificar conectividad con CachyOS
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -uxo pipefail
+          # Comprobamos que los recursos de CachyOS responden. No instalamos los
+          # repos en el runner porque sus paquetes son x86_64_v3 y el CPU del
+          # runner puede no soportarlos (rompería pacman para makepkg).
+          for url in \
+              https://mirror.cachyos.org/cachyos-repo.tar.xz \
+              https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos.db \
+              https://mirror.cachyos.org/repo/x86_64/cachyos-core/cachyos-core.db; do
+            code=$(curl -fsSL -o /dev/null -w '%{http_code}' --max-time 30 "$url" || echo "fail")
+            echo "[$code] $url"
+            [[ "$code" == "200" ]] || echo "::warning::Recurso CachyOS no accesible ($url)"
+          done
+          # En CachyOS real, cachyos-rate-mirrors viene preinstalado; no es necesario
+          # para nuestro build, solo para el runtime del helper.
+          exit 0
+
+      - name: Crear usuario de build (makepkg no admite root)
+        shell: bash
+        run: |
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+          chmod 0440 /etc/sudoers.d/builder
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ajustar permisos del workspace
+        shell: bash
+        run: chown -R builder:builder "$GITHUB_WORKSPACE"
+
+      - name: Sincronizar versión con el tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euxo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          sed -i "s/^pkgver=.*/pkgver=${tag}/" PKGBUILD
+          sed -i -E "s/VERSION [0-9]+\.[0-9]+\.[0-9]+/VERSION ${tag}/" CMakeLists.txt
+          echo "Versión sincronizada a ${tag}"
+
+      - name: Shellcheck del helper
+        shell: bash
+        run: shellcheck packaging/cachyos-updater-helper.sh
+
+      - name: Build directo con CMake (verificación rápida)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo -u builder bash -c '
+            set -euxo pipefail
+            cd "'"$GITHUB_WORKSPACE"'"
+            cmake -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_INSTALL_PREFIX=/usr
+            cmake --build build -j"$(nproc)"
+            ls -la build/cachyos-updater
+            file build/cachyos-updater
+          '
+
+      - name: Empaquetar con makepkg (.pkg.tar.zst)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo -u builder bash -c '
+            set -euxo pipefail
+            cd "'"$GITHUB_WORKSPACE"'"
+            makepkg -f --noconfirm --skipinteg
+            ls -la ./*.pkg.tar.zst
+          '
+
+      - name: Smoke-test (instalar y comprobar)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$GITHUB_WORKSPACE"
+          pacman -U --noconfirm ./*.pkg.tar.zst
+          test -x /usr/bin/cachyos-updater
+          test -x /usr/lib/cachyos-updater/cachyos-updater-helper
+          test -f /usr/share/applications/cachyos-updater.desktop
+          test -f /usr/share/polkit-1/actions/org.cachyos.updater.policy
+          test -f /usr/share/icons/hicolor/scalable/apps/cachyos-updater.svg
+          QT_QPA_PLATFORM=minimal /usr/bin/cachyos-updater --version
+          # El helper debe negarse a correr sin root y salir 126
+          set +e
+          sudo -u builder /usr/lib/cachyos-updater/cachyos-updater-helper
+          rc=$?
+          set -e
+          if [[ $rc -ne 126 ]]; then
+            echo "::error::El helper debería salir con 126 sin root, salió con $rc"
+            exit 1
+          fi
+
+      - name: Construir tarball portable
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$GITHUB_WORKSPACE"
+          version=$(grep -E '^pkgver=' PKGBUILD | cut -d= -f2)
+          stage="cachyos-updater-${version}-x86_64"
+          mkdir -p "out/${stage}"
+          DESTDIR="$(pwd)/out/${stage}" cmake --install build
+          install -m 644 LICENSE README.md "out/${stage}/" 2>/dev/null || true
+          (cd out && tar -czf "${stage}.tar.gz" "${stage}")
+          ls -la out/
+
+      - name: Subir artefactos
+        uses: actions/upload-artifact@v4
+        with:
+          name: cachyos-updater-packages
+          path: |
+            ./*.pkg.tar.zst
+            out/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Publicar release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Descargar artefactos
+        uses: actions/download-artifact@v4
+        with:
+          name: cachyos-updater-packages
+          path: artifacts
+
+      - name: Calcular checksums
+        shell: bash
+        run: |
+          cd artifacts
+          find . -type f \( -name '*.pkg.tar.zst' -o -name '*.tar.gz' \) -print0 \
+            | xargs -0 sha256sum > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Crear release de GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/**/*.pkg.tar.zst
+            artifacts/**/*.tar.gz
+            artifacts/SHA256SUMS.txt

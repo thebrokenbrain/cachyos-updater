@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+    <vendor>CachyOS Updater</vendor>
+    <vendor_url>https://github.com/thebrokenbrain/cachyos-updater</vendor_url>
+    <icon_name>cachyos-updater</icon_name>
+
+    <action id="org.cachyos.updater.run">
+        <description>Update the CachyOS system</description>
+        <description xml:lang="es">Actualizar el sistema CachyOS</description>
+        <message>Se necesita autenticación para actualizar el sistema.</message>
+        <message xml:lang="es">Se necesita autenticación para actualizar el sistema.</message>
+        <defaults>
+            <allow_any>auth_admin</allow_any>
+            <allow_inactive>auth_admin</allow_inactive>
+            <allow_active>auth_admin</allow_active>
+        </defaults>
+        <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/cachyos-updater/cachyos-updater-helper</annotate>
+        <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+    </action>
+</policyconfig>
