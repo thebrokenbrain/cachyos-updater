@@ -37,7 +37,19 @@ pkg_name=$(basename "$asset_url")
 say "Descargando ${pkg_name}…"
 curl -fL --progress-bar "$asset_url" -o "${TMPDIR}/${pkg_name}"
 
-say "Instalando con pacman (te pedirá la contraseña)…"
+# Dependencias en tiempo de ejecucion. Las instalamos/actualizamos explicitamente
+# para no depender del estado de la BD local: si el sistema lleva meses sin
+# tocarse, 'pacman -U' puede fallar resolviendo qt6-base. Sin --needed para
+# forzar upgrade si la version local es mas antigua que la que el binario espera.
+RUNTIME_DEPS=(qt6-base qt6-svg polkit)
+
+say "Refrescando la base de datos de paquetes…"
+sudo pacman -Sy --noconfirm
+
+say "Instalando/actualizando dependencias gráficas (${RUNTIME_DEPS[*]})…"
+sudo pacman -S --noconfirm "${RUNTIME_DEPS[@]}"
+
+say "Instalando ${pkg_name}…"
 sudo pacman -U --noconfirm "${TMPDIR}/${pkg_name}"
 
 say "Listo. Lanza 'CachyOS Updater' desde el menú de aplicaciones o ejecuta 'cachyos-updater'."
